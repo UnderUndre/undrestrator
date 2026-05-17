@@ -1,4 +1,4 @@
-# Undrlla AI - Multi-Model AI Orchestrator
+# Undrestrator - Multi-Model AI Orchestrator
 
 Coordinate multiple AI coding assistants (Claude Code, Gemini CLI, GitHub Copilot CLI, OpenCode, Qwen) through a structured pipeline that generates specs, reviews them, creates implementation contracts, and dispatches parallel coding tasks across isolated git worktrees.
 

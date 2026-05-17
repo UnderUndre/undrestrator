@@ -1,7 +1,7 @@
 {
-  "name": "@ai-helpers/orchestrator",
+  "name": "@underundre/undrestrator",
   "version": "0.1.0",
-  "description": "Multi-model AI orchestrator — coordinate Claude, Gemini, Qwen through speckit pipelines",
+  "description": "Multi-model AI undrestrator — coordinate Claude, Gemini, Qwen through speckit pipelines",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,12 +19,13 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@hono/node-server": "^1.14.1",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "better-sqlite3": "^11.8.0",
+    "clai-helpers": "^0.5.0",
     "commander": "^13.1.0",
     "eventemitter3": "^5.0.1",
     "execa": "^9.5.2",
-    "@hono/node-server": "^1.14.1",
     "hono": "^4.7.6",
     "pino": "^9.6.0",
     "strip-ansi": "^7.1.0",
