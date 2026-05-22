@@ -1,0 +1,202 @@
+[
+  {
+    "id": "rag-agent-template",
+    "name": "RAG Agent Workflow",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "rag-query",
+          "responseMode": "onReceived",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [250, 300],
+        "id": "webhook-trigger",
+        "name": "Webhook Query Trigger"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://orch-qdrant:6333/collections/test/points/search",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "vector",
+                "value": "={{ $json.body.vector }}"
+              },
+              {
+                "name": "limit",
+                "value": "3"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [450, 300],
+        "id": "qdrant-search",
+        "name": "Qdrant Vector Search"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://orch-omniroute:20128/v1/chat/completions",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "model",
+                "value": "auto"
+              },
+              {
+                "name": "messages",
+                "value": "=[{\"role\": \"system\", \"content\": \"Use the context below to answer.\"}, {\"role\": \"user\", \"content\": \"Context: {{ $json.result }}\\nQuestion: {{ $('Webhook Query Trigger').item.json.body.query }}\"}]"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [650, 300],
+        "id": "omniroute-llm",
+        "name": "OmniRoute LLM Generation"
+      }
+    ],
+    "connections": {
+      "Webhook Query Trigger": {
+        "main": [
+          [
+            {
+              "node": "Qdrant Vector Search",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Qdrant Vector Search": {
+        "main": [
+          [
+            {
+              "node": "OmniRoute LLM Generation",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "id": "webhook-relay-template",
+    "name": "Webhook Relay Workflow",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "relay-event",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [250, 500],
+        "id": "webhook-relay-trigger",
+        "name": "Webhook Relay Input"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://orch-omniroute:20128/v1/chat/completions",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "model",
+                "value": "auto"
+              },
+              {
+                "name": "messages",
+                "value": "=[{\"role\": \"user\", \"content\": \"Format this webhook payload nicely: {{ JSON.stringify($json.body) }}\"}]"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [450, 500],
+        "id": "format-payload",
+        "name": "Format Payload"
+      }
+    ],
+    "connections": {
+      "Webhook Relay Input": {
+        "main": [
+          [
+            {
+              "node": "Format Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "id": "scheduled-health-check",
+    "name": "Scheduled Health Check",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "minutes",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.cron",
+        "typeVersion": 1,
+        "position": [250, 700],
+        "id": "cron-trigger",
+        "name": "Every 15 Minutes"
+      },
+      {
+        "parameters": {
+          "url": "http://host.docker.internal:3001/health",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [450, 700],
+        "id": "ping-orchestrator",
+        "name": "Ping Orchestrator CLI/API"
+      }
+    ],
+    "connections": {
+      "Every 15 Minutes": {
+        "main": [
+          [
+            {
+              "node": "Ping Orchestrator CLI/API",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]
