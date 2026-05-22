@@ -1,0 +1,24 @@
+{
+  "name": "@undrestrator/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "orch": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@undrestrator/infra-client": "*",
+    "commander": "^13.1.0",
+    "dotenv": "^16.4.5",
+    "execa": "^9.5.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.14.0"
+  }
+}

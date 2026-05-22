@@ -1,6 +1,9 @@
 {
   "name": "@underundre/undrestrator",
   "version": "0.1.0",
+  "workspaces": [
+    "packages/*"
+  ],
   "description": "Multi-model AI undrestrator — coordinate Claude, Gemini, Qwen through speckit pipelines",
   "type": "module",
   "main": "dist/index.js",

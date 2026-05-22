@@ -1,0 +1,183 @@
+services:
+  # ── Redis (Cache, Rate-Limiting, queues) ──────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: orch-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    profiles:
+      - minimal
+      - coding
+      - business
+      - full
+
+  # ── Qdrant (Vector Database) ──────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: orch-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    profiles:
+      - minimal
+      - coding
+      - business
+      - full
+
+  # ── OmniRoute (Unified LLM Gateway) ───────────────────────────────────────
+  omniroute:
+    image: diegosouzapw/omniroute:latest
+    container_name: orch-omniroute
+    restart: unless-stopped
+    ports:
+      - "${OMNI_PORT:-20128}:20128"
+      - "${OMNI_API_PORT:-20129}:20129"
+    environment:
+      - DATA_DIR=/app/data
+      - PORT=20128
+      - API_PORT=20129
+      - API_HOST=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-some_random_jwt_secret_value_minimum_48_chars_long}
+      - API_KEY_SECRET=${API_KEY_SECRET:-some_hex_api_key_secret_value_minimum_64_chars_long}
+      - INITIAL_PASSWORD=${INITIAL_PASSWORD:-CHANGEME}
+    volumes:
+      - omniroute-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:20128/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - minimal
+      - coding
+      - business
+      - full
+
+  # ── Ollama (Local LLM Inference) ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: orch-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - coding
+      - full
+
+  # ── n8n (Integrations & Workflows) ─────────────────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: orch-n8n
+    restart: unless-stopped
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=false
+    volumes:
+      - n8n-data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5678/healthz', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - business
+      - full
+
+  # ── n8n Workflow Seeding ──────────────────────────────────────────────────
+  n8n-import:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: orch-n8n-import
+    depends_on:
+      n8n:
+        condition: service_healthy
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n/seed:/seed:ro
+    entrypoint: /bin/sh -c "n8n import:workflow --all /seed/workflows.json || true"
+    profiles:
+      - business
+      - full
+
+  # ── Hermes Agent (AI Agent Runtime) ───────────────────────────────────────
+  hermes:
+    build:
+      context: https://github.com/NousResearch/hermes-agent.git#main
+    container_name: orch-hermes
+    restart: unless-stopped
+    ports:
+      - "${HERMES_PORT:-8080}:8080"
+    environment:
+      - OPENAI_API_BASE=http://omniroute:20128/v1
+      - OPENAI_API_KEY=${ORCH_MCP_API_KEY:-some_mcp_api_key}
+      # Hermes gateway environments for Multi-Channel
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - WHATSAPP_BOT_TOKEN=${WHATSAPP_BOT_TOKEN}
+      - SIGNAL_BOT_TOKEN=${SIGNAL_BOT_TOKEN}
+      - EMAIL_USERNAME=${EMAIL_USERNAME}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
+      - EMAIL_SMTP_HOST=${EMAIL_SMTP_HOST}
+      - EMAIL_SMTP_PORT=${EMAIL_SMTP_PORT}
+    volumes:
+      - hermes-data:/root/.hermes
+    depends_on:
+      omniroute:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - coding
+      - business
+      - full
+
+volumes:
+  redis-data:
+  qdrant-data:
+  omniroute-data:
+  ollama-data:
+  n8n-data:
+  hermes-data:
