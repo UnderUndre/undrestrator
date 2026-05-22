@@ -63,6 +63,7 @@ ultrathink
    - **Dependency Graph section** with validated dependencies
    - **Parallel Lanes table** showing execution lanes per agent
    - **Agent Summary table** with task counts and start conditions
+   - **Agent Dispatch Plan** — for each agent: subagent name, skills to load, input context sections, task IDs, target files/directories (see template for generator rules)
    - **Critical Path** — the longest dependency chain
    - Implementation strategy section (MVP first, incremental delivery, parallel agent strategy)
 
@@ -72,6 +73,7 @@ ultrathink
    - Task count per user story
    - Number of parallel lanes
    - Critical path (longest dependency chain)
+   - Agent dispatch plan summary (agents × skills × context)
    - Independent test criteria for each story
    - Suggested MVP scope (typically just User Story 1)
    - Format validation: Confirm ALL tasks follow the checklist format

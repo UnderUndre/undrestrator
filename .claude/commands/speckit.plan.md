@@ -34,7 +34,7 @@ ultrathink
    - Evaluate gates (ERROR if violations unjustified)
    - Phase 0: Generate research.md (resolve all NEEDS CLARIFICATION)
    - Phase 1: Generate data-model.md, contracts/, quickstart.md
-   - Phase 1: Update agent context by running the agent script
+   - Phase 1: Update `specs/main/architecture.md` with new technologies, paths, and feature reference
    - Re-evaluate Constitution Check post-design
 
 4. **Stop and report**: Command ends after Phase 2 planning. Report branch, IMPL_PLAN path, and generated artifacts.
@@ -79,14 +79,15 @@ ultrathink
    - Examples: public APIs for libraries, command schemas for CLI tools, endpoints for web services, grammars for parsers, UI contracts for applications
    - Skip if project is purely internal (build scripts, one-off tools, etc.)
 
-3. **Agent context update**:
-   - Run `.specify/scripts/powershell/update-agent-context.ps1 -AgentType claude`
-   - These scripts detect which AI agent is in use
-   - Update the appropriate agent-specific context file
-   - Add only new technology from current plan
-   - Preserve manual additions between markers
+3. **Architecture update** (`specs/main/architecture.md`):
+   - Read the current `specs/main/architecture.md`
+   - If the feature introduces **new technologies** (language, framework, DB, external service) not already listed → add them to the relevant section (§5 CLI Package Layout, or a new subsection if the tech doesn't fit existing sections)
+   - If the feature adds **new directories or modules** to the project layout → update the path tables in §2/§4/§5/§6 to reflect the new structure
+   - Add a **feature reference row** to §6 SpecKit Integration's `specs/<feature-slug>/` pattern (or update the existing description if the slug already appears)
+   - Preserve all existing content — only append or update, never remove sections
+   - Use the same markdown table style and heading hierarchy as the rest of the file
 
-**Output**: data-model.md, /contracts/*, quickstart.md, agent-specific file
+**Output**: data-model.md, /contracts/*, quickstart.md, updated architecture.md
 
 ## Key rules
 
