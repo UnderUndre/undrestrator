@@ -86,8 +86,8 @@ async function generateEmbedding(text: string, dimension = 1536): Promise<number
         return data.data[0].embedding;
       }
     }
-  } catch {
-    // Fail silently, fallback below
+  } catch (err: any) {
+    console.warn(`\x1b[33mWarning:\x1b[0m Failed to generate embedding via OmniRoute (${err.message}). Falling back to deterministic hash.`);
   }
   return getDeterministicEmbedding(text, dimension);
 }
@@ -297,7 +297,8 @@ vectorCommand
   .action(async (query, options) => {
     console.log(`Embedding text: "${colors.yellow}${query}${colors.reset}" ...`);
     const embedding = await generateEmbedding(query);
-    const limit = parseInt(options.limit, 10);
+    const parsedLimit = parseInt(options.limit, 10);
+    const limit = Number.isFinite(parsedLimit) ? parsedLimit : 5;
     
     let parsedFilter: any = undefined;
     if (options.filter) {

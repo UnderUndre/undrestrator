@@ -94,7 +94,10 @@ export function createVectorStore(config: VectorConfig) {
   const collection = config.collection;
   const dimension = config.dimension || 1536;
 
+  let initialized = false;
+
   const init = async () => {
+    if (initialized) return;
     // Check if collection exists
     const res = await fetch(`${baseURL}/collections/${collection}`);
     if (res.status === 404) {
@@ -121,6 +124,7 @@ export function createVectorStore(config: VectorConfig) {
         })
       });
     }
+    initialized = true;
   };
 
   return {

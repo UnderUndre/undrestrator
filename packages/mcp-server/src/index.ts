@@ -40,6 +40,34 @@ const getN8nURL = () => process.env.N8N_URL || 'http://localhost:5678';
 const getOllamaURL = () => process.env.OLLAMA_URL || 'http://localhost:11434';
 const getHermesURL = () => process.env.HERMES_URL || 'http://localhost:8080';
 
+let redisHealthClient: Redis | null = null;
+function getRedisHealthClient() {
+  if (!redisHealthClient) {
+    redisHealthClient = new Redis(getRedisURL(), {
+      maxRetriesPerRequest: 0,
+      enableOfflineQueue: false,
+      retryStrategy: () => null,
+      connectTimeout: 500
+    });
+    redisHealthClient.on('error', () => {});
+  }
+  return redisHealthClient;
+}
+
+// ── Rate Limiter for Admin Tools ─────────────────────────────────────────────
+const rateLimits: Record<string, { count: number; resetAt: number }> = {};
+function checkRateLimit(key: string, limit: number, windowMs: number) {
+  const now = Date.now();
+  if (!rateLimits[key] || now > rateLimits[key].resetAt) {
+    rateLimits[key] = { count: 1, resetAt: now + windowMs };
+  } else {
+    rateLimits[key].count++;
+    if (rateLimits[key].count > limit) {
+      throw new McpError(ErrorCode.InvalidRequest, `Rate limit exceeded for ${key}. Please wait.`);
+    }
+  }
+}
+
 // ── Register MCP Tools ──────────────────────────────────────────────────────
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
@@ -191,16 +219,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // 1. Redis Check
         try {
-          const redis = new Redis(getRedisURL(), {
-            maxRetriesPerRequest: 0,
-            enableOfflineQueue: false,
-            retryStrategy: () => null,
-            connectTimeout: 500
-          });
-          redis.on('error', () => {});
+          const redis = getRedisHealthClient();
           const res = await redis.ping();
           healths.redis = res === 'PONG' ? 'healthy' : 'unhealthy';
-          redis.disconnect();
         } catch {
           healths.redis = 'unhealthy';
         }
@@ -251,14 +272,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'orch_service_restart': {
+        checkRateLimit('orch_service_restart', 10, 60000); // Max 10 restarts per minute
         const { serviceName } = args as { serviceName: string };
+        const validServices = ['omniroute', 'qdrant', 'redis', 'ollama', 'n8n', 'hermes'];
+        if (!validServices.includes(serviceName.toLowerCase())) {
+          throw new McpError(ErrorCode.InvalidParams, `Invalid service name: ${serviceName}`);
+        }
+        
+        let composePath = 'infra/docker-compose.yml';
+        import('fs').then(fs => {
+          if (!fs.existsSync(composePath)) {
+            composePath = '../infra/docker-compose.yml';
+          }
+        }).catch(() => {});
+
         // Execute host restart command using docker compose
         const { stdout } = await execa('docker', [
           'compose',
           '-f',
-          'infra/docker-compose.yml',
+          composePath,
           'restart',
-          serviceName,
+          serviceName.toLowerCase(),
         ]);
         return {
           content: [
@@ -424,6 +458,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'orch_circuit_breaker': {
         // Perform a quick connectivity reset and exponential backoff test
         // Fulfilling FR-018
+        checkRateLimit('orch_circuit_breaker', 5, 60000); // 5 per min
+        
+        if (redisHealthClient) {
+          redisHealthClient.disconnect();
+          redisHealthClient = null;
+        }
+
         return {
           content: [
             {
@@ -457,6 +498,7 @@ const runServer = async () => {
   if (isSSE) {
     const port = parseInt(process.env.ORCH_MCP_PORT || '3002', 10);
     let sseTransport: SSEServerTransport | null = null;
+    let sseSessionActive = false;
 
     const sseServer = http.createServer(async (req, res) => {
       // CORS preflight setup
@@ -485,8 +527,9 @@ const runServer = async () => {
       if (url.pathname === '/sse') {
         sseTransport = new SSEServerTransport('/messages', res);
         await server.connect(sseTransport);
+        sseSessionActive = true;
       } else if (url.pathname === '/messages') {
-        if (sseTransport && (sseTransport as any)._sseResponse) {
+        if (sseTransport && sseSessionActive) {
           try {
             await sseTransport.handlePostMessage(req, res);
           } catch (err: any) {
