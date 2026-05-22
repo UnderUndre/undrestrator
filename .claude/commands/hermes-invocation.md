@@ -1,13 +1,11 @@
 # Hermes CLI — Non-Interactive Invocation Pattern
 
-выполни промт с помощью хермеса и проверь его работу
-
 Hermes uses `prompt_toolkit` which requires a Win32 console. Non-TTY shells (bash, subprocess) crash with `NoConsoleScreenBufferError`. Solution: monkey-patch `prompt_toolkit.output.defaults.create_output` via Python wrapper.
 
 ## Working Command
 
 ```bash
-PROMPT="your prompt here" && TERM=dumb NO_COLOR=1 "C:\Users\Undre\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe" -c "
+PROMPT="your prompt here" && TERM=dumb NO_COLOR=1 "<path-to-hermes-venv>/python.exe" -c "
 import sys, os
 os.environ['TERM'] = 'dumb'
 os.environ['NO_COLOR'] = '1'
@@ -38,7 +36,7 @@ Your long multi-line prompt here.
 Can reference files, list tasks, etc.
 PROMPT_EOF
 
-PROMPT=$(cat .hermes-prompt.txt) && TERM=dumb NO_COLOR=1 "C:\Users\Undre\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe" -c "
+PROMPT=$(cat .hermes-prompt.txt) && TERM=dumb NO_COLOR=1 "<path-to-hermes-venv>/python.exe" -c "
 import sys, os
 os.environ['TERM'] = 'dumb'
 os.environ['NO_COLOR'] = '1'
@@ -73,7 +71,7 @@ rm -f .hermes-prompt.txt
 
 ## Key Points
 
-1. **Python binary**: Always use Hermes' venv Python at `C:\Users\Undre\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe`
+1. **Python binary**: Always use Hermes' venv Python (e.g., `<path-to-hermes-venv>/python.exe`)
 2. **Entry point**: `from hermes_cli.main import main` → set `sys.argv` manually → call `main()`
 3. **Monkey-patch**: Replace `create_output` to fall back to `PlainTextOutput` when no console available
 4. **Environment**: `TERM=dumb`, `NO_COLOR=1`, `PROMPT_TOOLKIT_NO_CPR=1` — belt and suspenders
