@@ -1,4 +1,11 @@
 services:
+  # NOTE: MCP Server runs as a Node.js process (not Docker container).
+  # For production deployment, add to this compose file with:
+  #   security_opt: [no-new-privileges:true]
+  #   user: "1000:1000"
+  #   read_only: true
+  #   volumes: [./.env:/.env:ro]
+
   # ── Redis (Cache, Rate-Limiting, queues) ──────────────────────────────────
   redis:
     image: redis:7-alpine
@@ -40,6 +47,7 @@ services:
       - coding
       - business
       - full
+      - rag
 
   # ── OmniRoute (Unified LLM Gateway) ───────────────────────────────────────
   omniroute:
@@ -58,6 +66,9 @@ services:
       - JWT_SECRET=${JWT_SECRET:-some_random_jwt_secret_value_minimum_48_chars_long}
       - API_KEY_SECRET=${API_KEY_SECRET:-some_hex_api_key_secret_value_minimum_64_chars_long}
       - INITIAL_PASSWORD=${INITIAL_PASSWORD:-CHANGEME}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_HOST=http://langfuse:3000
     volumes:
       - omniroute-data:/app/data
     depends_on:
@@ -73,6 +84,7 @@ services:
       - coding
       - business
       - full
+      - rag
 
   # ── Ollama (Local LLM Inference) ──────────────────────────────────────────
   ollama:
@@ -95,6 +107,31 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    profiles:
+      - coding
+      - full
+
+  # ── Ollama Model Auto-Pull ─────────────────────────────────────────────────
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: orch-ollama-pull
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_MODELS=${OLLAMA_MODELS:-hermes3,nomic-embed-text}
+    volumes:
+      - ollama-data:/root/.ollama
+    entrypoint: >
+      /bin/sh -c "
+        echo 'Pulling Ollama models...' &&
+        IFS=',' && for model in $$OLLAMA_MODELS; do
+          echo \"Pulling $$model...\" &&
+          ollama pull $$model || echo \"Warning: Failed to pull $$model\";
+        done &&
+        echo 'Model pull complete'
+      "
     profiles:
       - coding
       - full
@@ -174,6 +211,211 @@ services:
       - business
       - full
 
+  # ── Langfuse (LLM Observability) ──────────────────────────────────────────
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: orch-langfuse
+    restart: unless-stopped
+    ports:
+      - "${LANGFUSE_PORT:-3000}:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:-changeme_langfuse_nextauth_secret}
+      - SALT=${LANGFUSE_SALT:-changeme_langfuse_salt}
+      - NEXTAUTH_URL=http://localhost:${LANGFUSE_PORT:-3000}
+      - TELEMETRY_ENABLED=false
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - business
+      - full
+
+  # ── Langfuse PostgreSQL ──────────────────────────────────────────────────
+  langfuse-db:
+    image: postgres:16-alpine
+    container_name: orch-langfuse-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles:
+      - business
+      - full
+
+  # ── Authentik (Identity Provider / SSO) ────────────────────────────────────
+  authentik-db:
+    image: postgres:16-alpine
+    container_name: orch-authentik-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=authentik
+      - POSTGRES_PASSWORD=${AUTHENTIK_DB_PASSWORD:-authentik_secret}
+      - POSTGRES_DB=authentik
+    volumes:
+      - authentik-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles:
+      - full
+
+  authentik-redis:
+    image: redis:7-alpine
+    container_name: orch-authentik-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    profiles:
+      - full
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:latest
+    container_name: orch-authentik-server
+    restart: unless-stopped
+    command: server
+    ports:
+      - "${AUTHENTIK_PORT:-9000}:9000"
+      - "${AUTHENTIK_HTTPS_PORT:-9443}:9443"
+    environment:
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY:-changeme_authentik_secret_key_min_50_chars}
+      - AUTHENTIK_REDIS__HOST=authentik-redis
+      - AUTHENTIK_POSTGRESQL__HOST=authentik-db
+      - AUTHENTIK_POSTGRESQL__USER=authentik
+      - AUTHENTIK_POSTGRESQL__NAME=authentik
+      - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_DB_PASSWORD:-authentik_secret}
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/outpost.goauthentik.io/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - full
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:latest
+    container_name: orch-authentik-worker
+    restart: unless-stopped
+    command: worker
+    environment:
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY:-changeme_authentik_secret_key_min_50_chars}
+      - AUTHENTIK_REDIS__HOST=authentik-redis
+      - AUTHENTIK_POSTGRESQL__HOST=authentik-db
+      - AUTHENTIK_POSTGRESQL__USER=authentik
+      - AUTHENTIK_POSTGRESQL__NAME=authentik
+      - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_DB_PASSWORD:-authentik_secret}
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    profiles:
+      - full
+
+  # ── Traefik (Reverse Proxy / Auto-TLS) ─────────────────────────────────────
+  traefik:
+    image: traefik:v3.0
+    container_name: orch-traefik
+    restart: unless-stopped
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.com}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+    profiles:
+      - full
+
+  # ── Prometheus (Metrics Collection) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: orch-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    profiles:
+      - full
+
+  # ── Grafana (Dashboards) ────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: orch-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    profiles:
+      - full
+
+  # ── Loki (Log Aggregation) ──────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: orch-loki
+    restart: unless-stopped
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - loki-data:/loki
+    profiles:
+      - full
+
+  # ── Promtail (Log Shipper) ──────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:latest
+    container_name: orch-promtail
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    profiles:
+      - full
+
 volumes:
   redis-data:
   qdrant-data:
@@ -181,3 +423,10 @@ volumes:
   ollama-data:
   n8n-data:
   hermes-data:
+  langfuse-db-data:
+  langfuse-data:
+  authentik-db-data:
+  traefik-letsencrypt:
+  prometheus-data:
+  grafana-data:
+  loki-data:

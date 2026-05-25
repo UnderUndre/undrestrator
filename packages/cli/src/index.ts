@@ -293,6 +293,7 @@ vectorCommand
   .option('-c, --collection <name>', 'Collection name', 'default_collection')
   .option('-l, --limit <count>', 'Number of results to return', '5')
   .option('-f, --filter <json>', 'JSON query filter criteria')
+  .option('--min-score <threshold>', 'Minimum similarity score threshold (0-1)', '0')
   .description('Embedded search in Qdrant vector store')
   .action(async (query, options) => {
     console.log(`Embedding text: "${colors.yellow}${query}${colors.reset}" ...`);
@@ -310,6 +311,9 @@ vectorCommand
       }
     }
 
+    const parsedMinScore = parseFloat(options.minScore);
+    const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0;
+
     const store = createVectorStore({
       baseURL: getQdrantURL(),
       collection: options.collection,
@@ -318,9 +322,10 @@ vectorCommand
     console.log(`Searching Qdrant collection: "${colors.cyan}${options.collection}${colors.reset}"...`);
     try {
       const results = await store.search(embedding, limit, parsedFilter);
-      console.log(`\n${colors.bright}Found ${results.length} relevant context points:${colors.reset}\n`);
+      const filtered = minScore > 0 ? results.filter((r: any) => (r.score ?? 0) >= minScore) : results;
+      console.log(`\n${colors.bright}Found ${filtered.length} relevant context points (min-score: ${minScore}):${colors.reset}\n`);
 
-      results.forEach((match: any, index: number) => {
+      filtered.forEach((match: any, index: number) => {
         console.log(`${colors.green}[Result #${index + 1}] (Score: ${match.score?.toFixed(4)})${colors.reset}`);
         console.log(`ID: ${match.id}`);
         console.log(`Payload: ${JSON.stringify(match.payload, null, 2)}`);
@@ -384,7 +389,8 @@ const n8nCommand = program
 n8nCommand
   .command('list')
   .description('Lists all registered workflows in n8n')
-  .action(async () => {
+  .option('-t, --tenant <tenantId>', 'Filter workflows by tenant ID')
+  .action(async (options) => {
     const apiKey = process.env.N8N_API_KEY;
     if (!apiKey) {
       console.error(`${colors.red}Error:${colors.reset} N8N_API_KEY is not defined in the environment.`);
@@ -392,10 +398,14 @@ n8nCommand
     }
 
     try {
+      const headers: Record<string, string> = {
+        'X-N8N-API-KEY': apiKey,
+      };
+      if (options.tenant) {
+        headers['X-Tenant-ID'] = options.tenant;
+      }
       const res = await fetch(`${getN8nURL()}/api/v1/workflows`, {
-        headers: {
-          'X-N8N-API-KEY': apiKey,
-        },
+        headers,
       });
 
       if (!res.ok) {
@@ -420,6 +430,7 @@ n8nCommand
   .command('trigger')
   .argument('<workflowId>', 'Workflow ID or Webhook Path')
   .option('-p, --payload <json>', 'JSON data payload to send to workflow', '{}')
+  .option('-t, --tenant <tenantId>', 'Tenant ID for tenant-scoped execution')
   .description('Triggers a workflow in n8n via its API or webhook endpoint')
   .action(async (workflowId, options) => {
     let payload = {};
@@ -432,9 +443,13 @@ n8nCommand
 
     console.log(`Triggering n8n workflow "${colors.cyan}${workflowId}${colors.reset}"...`);
     try {
+      const triggerHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (options.tenant) {
+        triggerHeaders['X-Tenant-ID'] = options.tenant;
+      }
       const res = await fetch(`${getN8nURL()}/webhook/${workflowId}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: triggerHeaders,
         body: JSON.stringify(payload),
       });
 
@@ -455,6 +470,7 @@ hermesCommand
   .command('chat')
   .argument('<message>', 'Message to send to Hermes Agent')
   .option('-c, --context <json>', 'Optional session context data', '{}')
+  .option('-t, --tenant <tenantId>', 'Tenant ID for tenant-scoped execution')
   .description('Send a message and chat with the Hermes Agent')
   .action(async (message, options) => {
     let context = {};
@@ -465,7 +481,7 @@ hermesCommand
       return;
     }
 
-    const client = createHermesClient({ baseURL: getHermesURL() });
+    const client = createHermesClient({ baseURL: getHermesURL(), tenantId: options.tenant });
 
     console.log(`Sending message to Hermes Agent runtime...`);
     try {
@@ -485,8 +501,9 @@ const skillCommand = hermesCommand
 skillCommand
   .command('list')
   .description('Lists all injected skills on Hermes Agent')
-  .action(async () => {
-    const client = createHermesClient({ baseURL: getHermesURL() });
+  .option('-t, --tenant <tenantId>', 'Tenant ID for tenant-scoped execution')
+  .action(async (options) => {
+    const client = createHermesClient({ baseURL: getHermesURL(), tenantId: options.tenant });
     try {
       const skills = await client.getSkills();
       console.log(`\n${colors.bright}Active injected skills on Hermes:${colors.reset}\n`);
