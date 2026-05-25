@@ -158,7 +158,7 @@ describe("Client SDK - @undrestrator/infra-client", () => {
       global.fetch = vi.fn().mockImplementation(async (url, options) => {
         const urlStr = String(url);
         if (urlStr.endsWith("/collections/test-col")) {
-          if (!options) {
+          if (!options || options.method === undefined || options.method === "GET") {
             initCollectionChecked = true;
             return { status: 404, ok: false };
           }
@@ -249,6 +249,66 @@ describe("Client SDK - @undrestrator/infra-client", () => {
       expect(searchCalled).toBe(true);
       expect(results).toEqual(mockResultPoints);
     });
+
+    it("respects tenantId for collection naming", async () => {
+      let createCalled = false;
+      global.fetch = vi.fn().mockImplementation(async (url, options) => {
+        const urlStr = String(url);
+        if (urlStr.endsWith("/collections/tenant-1_test-col")) {
+          if (!options || options.method === undefined || options.method === "GET") {
+            return { status: 404, ok: false };
+          }
+          if (options.method === "PUT") {
+            createCalled = true;
+            expect(options.headers["X-Tenant-ID"]).toBe("tenant-1");
+            return { status: 200, ok: true, json: async () => ({}) };
+          }
+        }
+        return { status: 200, ok: true, json: async () => ({}) };
+      });
+
+      const store = createVectorStore({
+        baseURL: "http://qdrant.test",
+        collection: "test-col",
+        tenantId: "tenant-1"
+      });
+
+      await store.init();
+      expect(createCalled).toBe(true);
+    });
+
+    it("creates and lists aliases correctly", async () => {
+      global.fetch = vi.fn().mockImplementation(async (url, options) => {
+        const urlStr = String(url);
+        if (urlStr.endsWith("/collections/tenant-1_test-col")) {
+          return { status: 200, ok: true };
+        }
+        if (urlStr.endsWith("/collections/aliases") && options?.method === "POST") {
+          const body = JSON.parse(options.body as string);
+          expect(body.actions[0].create_alias.collection_name).toBe("tenant-1_test-col");
+          expect(body.actions[0].create_alias.alias_name).toBe("my-alias");
+          return { status: 200, ok: true };
+        }
+        if (urlStr.endsWith("/collections/tenant-1_test-col/aliases")) {
+          return {
+            status: 200,
+            ok: true,
+            json: async () => ({ result: { aliases: [{ alias_name: "my-alias" }] } })
+          };
+        }
+        return { status: 200, ok: true };
+      });
+
+      const store = createVectorStore({
+        baseURL: "http://qdrant.test",
+        collection: "test-col",
+        tenantId: "tenant-1"
+      });
+
+      await store.createAlias("my-alias");
+      const aliases = await store.listAliases();
+      expect(aliases).toEqual(["my-alias"]);
+    });
   });
 
   describe("createQueue", () => {
@@ -298,7 +358,9 @@ describe("Client SDK - @undrestrator/infra-client", () => {
       const client = createHermesClient({ baseURL: "http://hermes.test" });
       const res = await client.getSkills();
 
-      expect(global.fetch).toHaveBeenCalledWith("http://hermes.test/skills");
+      expect(global.fetch).toHaveBeenCalledWith("http://hermes.test/skills", {
+        headers: { "Content-Type": "application/json" }
+      });
       expect(res).toEqual(mockSkills);
     });
 
