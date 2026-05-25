@@ -219,7 +219,7 @@ services:
     ports:
       - "${LANGFUSE_PORT:-3000}:3000"
     environment:
-      - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      - DATABASE_URL=postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-db:5432/langfuse
       - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:-changeme_langfuse_nextauth_secret}
       - SALT=${LANGFUSE_SALT:-changeme_langfuse_salt}
       - NEXTAUTH_URL=http://localhost:${LANGFUSE_PORT:-3000}
@@ -243,7 +243,7 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=langfuse
-      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_PASSWORD=${LANGFUSE_DB_PASSWORD:-langfuse}
       - POSTGRES_DB=langfuse
     volumes:
       - langfuse-db-data:/var/lib/postgresql/data
@@ -411,6 +411,7 @@ services:
       - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - loki
     profiles:

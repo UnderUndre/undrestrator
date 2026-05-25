@@ -14,6 +14,7 @@ export interface ChatMessage {
 export interface LLMConfig extends TenantConfig {
   apiKey?: string;
   baseURL?: string;
+  costPerToken?: number;
 }
 
 export interface CompletionOptions {
@@ -88,7 +89,7 @@ export function createLLMClient(config: LLMConfig = {}) {
       return {
         reported: true,
         tenantId: config.tenantId,
-        costEstimate: (usage.promptTokens + usage.completionTokens) * 0.00001,
+        costEstimate: (usage.promptTokens + usage.completionTokens) * (config.costPerToken ?? 0.00001),
         model: usage.model,
         timestamp: new Date().toISOString()
       };
@@ -142,7 +143,7 @@ export function createVectorStore(config: VectorConfig) {
         headers: headers(),
         body: JSON.stringify({
           actions: [
-            { create_alias: { collection_name: collection, alias_name: config.alias } }
+            { create_alias: { collection_name: effectiveCollection, alias_name: config.alias } }
           ]
         })
       });
@@ -184,7 +185,7 @@ export function createVectorStore(config: VectorConfig) {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify({
-          actions: [{ create_alias: { collection_name: collection, alias_name: alias } }]
+          actions: [{ create_alias: { collection_name: effectiveCollection, alias_name: alias } }]
         })
       });
       return res.ok;

@@ -117,6 +117,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             prompt: { type: 'string', description: 'The prompt to send to the LLM' },
             model: { type: 'string', description: 'The virtual model or target to use (e.g., auto, local, quality)', default: 'auto' },
             system: { type: 'string', description: 'Optional system instructions for the LLM' },
+            tenantId: { type: 'string', description: 'Optional tenant ID for tenant-scoped execution' },
           },
           required: ['prompt'],
         },
@@ -237,7 +238,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   };
 
   try {
-    switch (name) {
+    const processRequest = async () => {
+      switch (name) {
       case 'orch_health': {
         const healths: Record<string, string> = {};
 
@@ -457,10 +459,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'orch_workflow_trigger': {
-        const { workflowId, payload } = args as { workflowId: string; payload: any; tenantId?: string };
+        const { workflowId, payload, tenantId } = args as { workflowId: string; payload: any; tenantId?: string };
         const triggerHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-        if ((args as { tenantId?: string }).tenantId) {
-          triggerHeaders['X-Tenant-ID'] = (args as { tenantId?: string }).tenantId!;
+        if (tenantId) {
+          triggerHeaders['X-Tenant-ID'] = tenantId;
         }
         const res = await fetch(`${getN8nURL()}/webhook/${workflowId}`, {
           method: 'POST',
@@ -527,18 +529,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const services = [
-          { name: 'redis', check: async () => { const r = new Redis(getRedisURL(), { maxRetriesPerRequest: 0, connectTimeout: 500 }); r.on('error', () => {}); await r.ping(); r.disconnect(); return true; } },
+          { name: 'redis', check: async () => { const r = new Redis(getRedisURL(), { maxRetriesPerRequest: 0, connectTimeout: 500 }); r.on('error', () => {}); try { await r.ping(); return true; } finally { r.disconnect(); } } },
           { name: 'qdrant', check: async () => { const r = await fetch(`${getQdrantURL()}/healthz`); return r.ok; } },
           { name: 'omniroute', check: async () => { const r = await fetch(`${getOmniRouteURL().replace('/v1', '')}/health`); return r.ok; } },
         ];
 
         const results: Record<string, { status: string; retries: number; lastError?: string }> = {};
 
-        for (const svc of services) {
+        await Promise.all(services.map(async (svc) => {
           let retries = 0;
           let success = false;
           let lastError = '';
-          const maxWaitMs = 300000;
+          const maxWaitMs = 30000; // 30 seconds timeout
           const startTime = Date.now();
           let delay = 1000;
 
@@ -551,7 +553,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               retries++;
             }
             await new Promise(resolve => setTimeout(resolve, delay));
-            delay = Math.min(delay * 2, 30000);
+            delay = Math.min(delay * 2, 5000);
           }
 
           results[svc.name] = {
@@ -559,7 +561,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             retries,
             lastError: success ? undefined : lastError,
           };
-        }
+        }));
 
         return {
           content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
@@ -568,8 +570,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool name: ${name}`);
-    }
+      }
+    };
+    
+    const result = await processRequest();
     console.error(JSON.stringify({ level: 'audit', ...auditLog, status: 'success' }));
+    return result;
   } catch (error: any) {
     console.error(JSON.stringify({ level: 'audit', ...auditLog, status: 'error', error: error.message || String(error) }));
     return {
@@ -621,6 +627,11 @@ const runServer = async () => {
         sseTransport = new SSEServerTransport('/messages', res);
         await server.connect(sseTransport);
         sseSessionActive = true;
+        
+        res.on('close', () => {
+          sseSessionActive = false;
+          sseTransport = null;
+        });
       } else if (url.pathname === '/messages') {
         if (sseTransport && sseSessionActive) {
           try {
