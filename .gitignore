@@ -3,3 +3,14 @@
 .helpers/
 node_modules/
 dist/
+build/
+*.log
+.env*
+.env
+coverage/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*.tsbuildinfo
+.vitest/
