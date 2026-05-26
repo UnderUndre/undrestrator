@@ -198,5 +198,190 @@
         ]
       }
     }
+  },
+  {
+    "id": "web-search-agent-template",
+    "name": "Web Search Agent",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "web-search",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [250, 900],
+        "id": "web-search-trigger",
+        "name": "Search Query Trigger"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://orch-omniroute:20128/v1/chat/completions",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "model",
+                "value": "auto"
+              },
+              {
+                "name": "messages",
+                "value": "=[{\"role\": \"system\", \"content\": \"You are a web search assistant. Analyze the query and provide a comprehensive answer.\"}, {\"role\": \"user\", \"content\": \"{{ $json.body.query }}\"}]"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [450, 900],
+        "id": "search-llm",
+        "name": "Generate Search Response"
+      }
+    ],
+    "connections": {
+      "Search Query Trigger": {
+        "main": [
+          [
+            {
+              "node": "Generate Search Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "id": "scheduled-retry-template",
+    "name": "Scheduled Retry with Error Handling",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "hours",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.cron",
+        "typeVersion": 1,
+        "position": [250, 1100],
+        "id": "retry-cron",
+        "name": "Hourly Retry Trigger"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://orch-omniroute:20128/v1/chat/completions",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "model",
+                "value": "auto"
+              },
+              {
+                "name": "messages",
+                "value": "=[{\"role\": \"user\", \"content\": \"Perform scheduled health check and report any issues.\"}]"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [450, 1100],
+        "id": "retry-request",
+        "name": "Retry Request"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "number": [
+              {
+                "value1": "={{ $json.statusCode }}",
+                "operation": "notEqual",
+                "value2": 200
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [650, 1100],
+        "id": "check-status",
+        "name": "Check Response Status"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://orch-omniroute:20128/v1/chat/completions",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "model",
+                "value": "auto"
+              },
+              {
+                "name": "messages",
+                "value": "=[{\"role\": \"system\", \"content\": \"You are an alert system.\"}, {\"role\": \"user\", \"content\": \"A scheduled task failed. Error: {{ JSON.stringify($json) }}. Suggest remediation.\"}]"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [850, 1000],
+        "id": "error-handler",
+        "name": "Error Handler"
+      }
+    ],
+    "connections": {
+      "Hourly Retry Trigger": {
+        "main": [
+          [
+            {
+              "node": "Retry Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Retry Request": {
+        "main": [
+          [
+            {
+              "node": "Check Response Status",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check Response Status": {
+        "main": [
+          [
+            {
+              "node": "Error Handler",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
   }
 ]

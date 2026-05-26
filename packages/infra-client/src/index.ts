@@ -1,15 +1,20 @@
 import { Redis } from 'ioredis';
 import { Queue, Worker } from 'bullmq';
 
+export interface TenantConfig {
+  tenantId?: string;
+}
+
 // ── LLM Client types and functions ──────────────────────────────────────────
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'developer';
   content: string;
 }
 
-export interface LLMConfig {
+export interface LLMConfig extends TenantConfig {
   apiKey?: string;
   baseURL?: string;
+  costPerToken?: number;
 }
 
 export interface CompletionOptions {
@@ -23,6 +28,13 @@ export interface CompletionOptions {
 export function createLLMClient(config: LLMConfig = {}) {
   const baseURL = config.baseURL || process.env.OMNI_ROUTE_URL || 'http://localhost:20128/v1';
   const apiKey = config.apiKey || process.env.ORCH_MCP_API_KEY || 'no-key-needed';
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey}`
+  };
+  if (config.tenantId) {
+    headers['X-Tenant-ID'] = config.tenantId;
+  }
 
   return {
     chat: {
@@ -30,10 +42,7 @@ export function createLLMClient(config: LLMConfig = {}) {
         create: async (options: CompletionOptions) => {
           const response = await fetch(`${baseURL}/chat/completions`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
-            },
+            headers,
             body: JSON.stringify(options)
           });
           if (!response.ok) {
@@ -44,10 +53,7 @@ export function createLLMClient(config: LLMConfig = {}) {
         createStream: async function* (options: CompletionOptions) {
           const response = await fetch(`${baseURL}/chat/completions`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
-            },
+            headers,
             body: JSON.stringify({ ...options, stream: true })
           });
           if (!response.ok || !response.body) {
@@ -77,12 +83,22 @@ export function createLLMClient(config: LLMConfig = {}) {
           }
         }
       }
+    },
+    reportCost: async (usage: { promptTokens: number; completionTokens: number; model: string }) => {
+      if (!config.tenantId) return { reported: false, reason: 'no tenant context' };
+      return {
+        reported: true,
+        tenantId: config.tenantId,
+        costEstimate: (usage.promptTokens + usage.completionTokens) * (config.costPerToken ?? 0.00001),
+        model: usage.model,
+        timestamp: new Date().toISOString()
+      };
     }
   };
 }
 
 // ── Vector Store types and functions ─────────────────────────────────────────
-export interface VectorConfig {
+export interface VectorConfig extends TenantConfig {
   baseURL?: string;
   collection: string;
   alias?: string;
@@ -92,18 +108,26 @@ export interface VectorConfig {
 export function createVectorStore(config: VectorConfig) {
   const baseURL = config.baseURL || process.env.QDRANT_URL || 'http://localhost:6333';
   const collection = config.collection;
+  const effectiveCollection = config.tenantId ? `${config.tenantId}_${collection}` : collection;
   const dimension = config.dimension || 1536;
+
+  const headers = () => {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (config.tenantId) h['X-Tenant-ID'] = config.tenantId;
+    return h;
+  };
 
   let initialized = false;
 
   const init = async () => {
     if (initialized) return;
-    // Check if collection exists
-    const res = await fetch(`${baseURL}/collections/${collection}`);
+    const res = await fetch(`${baseURL}/collections/${effectiveCollection}`, {
+      headers: headers()
+    });
     if (res.status === 404) {
-      await fetch(`${baseURL}/collections/${collection}`, {
+      await fetch(`${baseURL}/collections/${effectiveCollection}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify({
           vectors: {
             size: dimension,
@@ -116,10 +140,10 @@ export function createVectorStore(config: VectorConfig) {
     if (config.alias) {
       await fetch(`${baseURL}/collections/aliases`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify({
           actions: [
-            { create_alias: { collection_name: collection, alias_name: config.alias } }
+            { create_alias: { collection_name: effectiveCollection, alias_name: config.alias } }
           ]
         })
       });
@@ -131,19 +155,19 @@ export function createVectorStore(config: VectorConfig) {
     init,
     upsert: async (points: Array<{ id: string | number; vector: number[]; payload?: any }>) => {
       await init();
-      const res = await fetch(`${baseURL}/collections/${collection}/points?wait=true`, {
+      const res = await fetch(`${baseURL}/collections/${effectiveCollection}/points?wait=true`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify({ points })
       });
       return res.ok;
     },
     search: async (vector: number[], limit = 5, filter?: any) => {
       await init();
-      const target = config.alias || collection;
+      const target = config.alias || effectiveCollection;
       const res = await fetch(`${baseURL}/collections/${target}/points/search`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify({
           vector,
           limit,
@@ -154,12 +178,54 @@ export function createVectorStore(config: VectorConfig) {
       });
       const data = await res.json() as any;
       return data.result || [];
+    },
+    createAlias: async (alias: string) => {
+      await init();
+      const res = await fetch(`${baseURL}/collections/aliases`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          actions: [{ create_alias: { collection_name: effectiveCollection, alias_name: alias } }]
+        })
+      });
+      return res.ok;
+    },
+    deleteAlias: async (alias: string) => {
+      await init();
+      const res = await fetch(`${baseURL}/collections/aliases`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          actions: [{ delete_alias: { alias_name: alias } }]
+        })
+      });
+      return res.ok;
+    },
+    listAliases: async () => {
+      await init();
+      const res = await fetch(`${baseURL}/collections/${effectiveCollection}/aliases`, {
+        headers: headers()
+      });
+      const data = await res.json() as any;
+      return (data.result?.aliases || []).map((a: any) => a.alias_name || a);
+    },
+    listCollections: async () => {
+      const res = await fetch(`${baseURL}/collections`, {
+        headers: headers()
+      });
+      const data = await res.json() as any;
+      const allCollections = (data.result?.collections || []).map((c: any) => c.name as string);
+      if (config.tenantId) {
+        const prefix = `${config.tenantId}_`;
+        return allCollections.filter((name: string) => name.startsWith(prefix));
+      }
+      return allCollections;
     }
   };
 }
 
 // ── Redis & Queue types and functions ────────────────────────────────────────
-export interface QueueConfig {
+export interface QueueConfig extends TenantConfig {
   name: string;
   redisURL?: string;
 }
@@ -185,18 +251,24 @@ export function createQueue(config: QueueConfig) {
 }
 
 // ── Hermes Agent types and functions ─────────────────────────────────────────
-export interface HermesConfig {
+export interface HermesConfig extends TenantConfig {
   baseURL?: string;
 }
 
 export function createHermesClient(config: HermesConfig = {}) {
   const baseURL = config.baseURL || process.env.HERMES_URL || 'http://localhost:8080';
 
+  const headers = () => {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (config.tenantId) h['X-Tenant-ID'] = config.tenantId;
+    return h;
+  };
+
   return {
     chat: async (message: string, context?: any) => {
       const res = await fetch(`${baseURL}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify({ message, context })
       });
       if (!res.ok) {
@@ -205,7 +277,9 @@ export function createHermesClient(config: HermesConfig = {}) {
       return res.json();
     },
     getSkills: async () => {
-      const res = await fetch(`${baseURL}/skills`);
+      const res = await fetch(`${baseURL}/skills`, {
+        headers: headers()
+      });
       if (!res.ok) {
         throw new Error(`Hermes API error: ${res.status} ${res.statusText}`);
       }
@@ -214,7 +288,7 @@ export function createHermesClient(config: HermesConfig = {}) {
     createSkill: async (skill: { name: string; description: string; code: string }) => {
       const res = await fetch(`${baseURL}/skills`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify(skill)
       });
       if (!res.ok) {

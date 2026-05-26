@@ -1,0 +1,59 @@
+{
+  "default_routing": {
+    "description": "Default hybrid routing: local models for cheap tasks, cloud APIs for complex tasks",
+    "rules": [
+      {
+        "name": "local-cheap",
+        "condition": { "max_tokens": { "<=": 500 }, "stream": false },
+        "providers": ["ollama"],
+        "fallback": ["openai"],
+        "priority": 1
+      },
+      {
+        "name": "local-embedding",
+        "condition": { "endpoint": "/embeddings" },
+        "providers": ["ollama"],
+        "fallback": ["openai"],
+        "priority": 1
+      },
+      {
+        "name": "cloud-quality",
+        "condition": { "max_tokens": { ">": 500 } },
+        "providers": ["openai", "anthropic"],
+        "fallback": ["ollama"],
+        "priority": 2
+      },
+      {
+        "name": "streaming",
+        "condition": { "stream": true },
+        "providers": ["openai", "ollama"],
+        "fallback": [],
+        "priority": 1
+      },
+      {
+        "name": "default",
+        "condition": {},
+        "providers": ["ollama", "openai"],
+        "fallback": ["anthropic"],
+        "priority": 10
+      }
+    ],
+    "provider_config": {
+      "ollama": {
+        "base_url": "http://ollama:11434",
+        "models": ["hermes3", "nomic-embed-text"],
+        "cost_per_1k_tokens": 0
+      },
+      "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "models": ["gpt-4o-mini", "text-embedding-3-small"],
+        "cost_per_1k_tokens": 0.00015
+      },
+      "anthropic": {
+        "base_url": "https://api.anthropic.com",
+        "models": ["claude-sonnet-4-20250514"],
+        "cost_per_1k_tokens": 0.003
+      }
+    }
+  }
+}

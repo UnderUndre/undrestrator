@@ -109,6 +109,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'orch_llm_stream',
+        description: 'Streams an LLM response from OmniRoute via SSE, collecting all chunks into a single response.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'The prompt to send to the LLM' },
+            model: { type: 'string', description: 'The virtual model or target to use (e.g., auto, local, quality)', default: 'auto' },
+            system: { type: 'string', description: 'Optional system instructions for the LLM' },
+            tenantId: { type: 'string', description: 'Optional tenant ID for tenant-scoped execution' },
+          },
+          required: ['prompt'],
+        },
+      },
+      {
         name: 'orch_vector_upsert',
         description: 'Upserts a vector point into a Qdrant collection.',
         inputSchema: {
@@ -149,7 +163,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: 'Lists all workflows available in the n8n instance.',
         inputSchema: {
           type: 'object',
-          properties: {},
+          properties: {
+            tenantId: { type: 'string', description: 'Optional tenant ID to filter workflows by tag' },
+          },
         },
       },
       {
@@ -160,6 +176,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             workflowId: { type: 'string', description: 'The ID of the workflow or webhook path to trigger' },
             payload: { type: 'object', description: 'The input data payload for the workflow trigger' },
+            tenantId: { type: 'string', description: 'Optional tenant ID for tenant-scoped execution' },
           },
           required: ['workflowId', 'payload'],
         },
@@ -172,6 +189,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             message: { type: 'string', description: 'The message to send' },
             context: { type: 'object', description: 'Optional session context data' },
+            tenantId: { type: 'string', description: 'Optional tenant ID for tenant-scoped execution' },
           },
           required: ['message'],
         },
@@ -183,6 +201,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             action: { type: 'string', enum: ['list', 'create'], description: 'The action to perform' },
+            tenantId: { type: 'string', description: 'Optional tenant ID for tenant-scoped execution' },
             skill: {
               type: 'object',
               properties: {
@@ -212,8 +231,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  const auditLog = {
+    tool: request.params.name,
+    timestamp: new Date().toISOString(),
+    args: Object.keys(request.params.arguments || {}),
+  };
+
   try {
-    switch (name) {
+    const processRequest = async () => {
+      switch (name) {
       case 'orch_health': {
         const healths: Record<string, string> = {};
 
@@ -327,6 +353,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'orch_llm_stream': {
+        const { prompt, model, system } = args as { prompt: string; model?: string; system?: string };
+        const llm = createLLMClient({
+          baseURL: getOmniRouteURL(),
+          apiKey: process.env.ORCH_MCP_API_KEY,
+        });
+
+        const messages: any[] = [];
+        if (system) {
+          messages.push({ role: 'system', content: system });
+        }
+        messages.push({ role: 'user', content: prompt });
+
+        let fullText = '';
+        for await (const chunk of llm.chat.completions.createStream({
+          model: model || 'auto',
+          messages,
+        })) {
+          const token = chunk.choices?.[0]?.delta?.content || '';
+          fullText += token;
+        }
+
+        return {
+          content: [{ type: 'text', text: fullText || '(empty response)' }],
+        };
+      }
+
       case 'orch_vector_upsert': {
         const { collection, id, vector, payload } = args as {
           collection: string;
@@ -384,10 +437,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
+        const reqHeaders: Record<string, string> = {
+          'X-N8N-API-KEY': apiKey,
+        };
+        if (args) {
+          const typedArgs = args as { tenantId?: string };
+          if (typedArgs.tenantId) {
+            reqHeaders['X-Tenant-ID'] = typedArgs.tenantId;
+          }
+        }
         const res = await fetch(`${getN8nURL()}/api/v1/workflows`, {
-          headers: {
-            'X-N8N-API-KEY': apiKey,
-          },
+          headers: reqHeaders,
         });
         if (!res.ok) {
           throw new Error(`n8n API error: ${res.statusText}`);
@@ -399,11 +459,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'orch_workflow_trigger': {
-        const { workflowId, payload } = args as { workflowId: string; payload: any };
-        // Trigger standard webhook-relay or API endpoint
+        const { workflowId, payload, tenantId } = args as { workflowId: string; payload: any; tenantId?: string };
+        const triggerHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (tenantId) {
+          triggerHeaders['X-Tenant-ID'] = tenantId;
+        }
         const res = await fetch(`${getN8nURL()}/webhook/${workflowId}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: triggerHeaders,
           body: JSON.stringify(payload),
         });
 
@@ -419,9 +482,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'orch_hermes_chat': {
-        const { message, context } = args as { message: string; context?: any };
+        const { message, context } = args as { message: string; context?: any; tenantId?: string };
         const hermes = createHermesClient({
           baseURL: getHermesURL(),
+          tenantId: (args as { tenantId?: string }).tenantId,
         });
 
         const reply = await hermes.chat(message, context);
@@ -431,9 +495,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'orch_hermes_skills': {
-        const { action, skill } = args as { action: 'list' | 'create'; skill?: any };
+        const { action, skill } = args as { action: 'list' | 'create'; skill?: any; tenantId?: string };
         const hermes = createHermesClient({
           baseURL: getHermesURL(),
+          tenantId: (args as { tenantId?: string }).tenantId,
         });
 
         if (action === 'list') {
@@ -456,29 +521,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'orch_circuit_breaker': {
-        // Perform a quick connectivity reset and exponential backoff test
-        // Fulfilling FR-018
-        checkRateLimit('orch_circuit_breaker', 5, 60000); // 5 per min
+        checkRateLimit('orch_circuit_breaker', 5, 60000);
         
         if (redisHealthClient) {
           redisHealthClient.disconnect();
           redisHealthClient = null;
         }
 
+        const services = [
+          { name: 'redis', check: async () => { const r = new Redis(getRedisURL(), { maxRetriesPerRequest: 0, connectTimeout: 500 }); r.on('error', () => {}); try { await r.ping(); return true; } finally { r.disconnect(); } } },
+          { name: 'qdrant', check: async () => { const r = await fetch(`${getQdrantURL()}/healthz`); return r.ok; } },
+          { name: 'omniroute', check: async () => { const r = await fetch(`${getOmniRouteURL().replace('/v1', '')}/health`); return r.ok; } },
+        ];
+
+        const results: Record<string, { status: string; retries: number; lastError?: string }> = {};
+
+        await Promise.all(services.map(async (svc) => {
+          let retries = 0;
+          let success = false;
+          let lastError = '';
+          const maxWaitMs = 30000; // 30 seconds timeout
+          const startTime = Date.now();
+          let delay = 1000;
+
+          while (!success && (Date.now() - startTime) < maxWaitMs) {
+            try {
+              success = await svc.check();
+              if (success) break;
+            } catch (err: any) {
+              lastError = err.message || String(err);
+              retries++;
+            }
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay = Math.min(delay * 2, 5000);
+          }
+
+          results[svc.name] = {
+            status: success ? 'recovered' : 'unhealthy',
+            retries,
+            lastError: success ? undefined : lastError,
+          };
+        }));
+
         return {
-          content: [
-            {
-              type: 'text',
-              text: 'Manually triggered connection reset. Re-checking all core clients. Connections are fully online.',
-            },
-          ],
+          content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
         };
       }
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool name: ${name}`);
-    }
+      }
+    };
+    
+    const result = await processRequest();
+    console.error(JSON.stringify({ level: 'audit', ...auditLog, status: 'success' }));
+    return result;
   } catch (error: any) {
+    console.error(JSON.stringify({ level: 'audit', ...auditLog, status: 'error', error: error.message || String(error) }));
     return {
       isError: true,
       content: [
@@ -528,6 +627,11 @@ const runServer = async () => {
         sseTransport = new SSEServerTransport('/messages', res);
         await server.connect(sseTransport);
         sseSessionActive = true;
+        
+        res.on('close', () => {
+          sseSessionActive = false;
+          sseTransport = null;
+        });
       } else if (url.pathname === '/messages') {
         if (sseTransport && sseSessionActive) {
           try {
